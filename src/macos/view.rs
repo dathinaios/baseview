@@ -183,6 +183,11 @@ unsafe fn create_view_class() -> &'static Class {
     class.add_method(sel!(otherMouseDragged:), mouse_moved as extern "C" fn(&Object, Sel, id));
 
     class.add_method(sel!(scrollWheel:), scroll_wheel as extern "C" fn(&Object, Sel, id));
+    class.add_method(sel!(cursorUpdate:), cursor_update as extern "C" fn(&Object, Sel, id));
+    class.add_method(
+        sel!(resetCursorRects),
+        reset_cursor_rects as extern "C" fn(&Object, Sel),
+    );
 
     class.add_method(
         sel!(viewDidChangeBackingProperties:),
@@ -218,7 +223,10 @@ unsafe fn create_view_class() -> &'static Class {
     add_mouse_button_class_method!(class, otherMouseDown, ButtonPressed, MouseButton::Middle);
     add_mouse_button_class_method!(class, otherMouseUp, ButtonReleased, MouseButton::Middle);
     add_simple_mouse_class_method!(class, mouseEntered, MouseEvent::CursorEntered);
-    add_simple_mouse_class_method!(class, mouseExited, MouseEvent::CursorLeft);
+    class.add_method(
+        sel!(mouseExited:),
+        mouse_exited as extern "C" fn(&Object, Sel, id),
+    );
 
     add_simple_keyboard_class_method!(class, keyDown);
     add_simple_keyboard_class_method!(class, keyUp);
@@ -227,6 +235,38 @@ unsafe fn create_view_class() -> &'static Class {
     class.add_ivar::<*mut c_void>(BASEVIEW_STATE_IVAR);
 
     class.register()
+}
+
+extern "C" fn mouse_exited(this: &Object, _sel: Sel, _event: id) {
+    let state = unsafe { WindowState::from_view(this) };
+    if state.cursor_hidden.get() {
+        unsafe {
+            let arrow: id = msg_send![class!(NSCursor), arrowCursor];
+            let _: () = msg_send![arrow, set];
+        }
+        state.cursor_hidden.set(false);
+    }
+    state.trigger_event(Event::Mouse(MouseEvent::CursorLeft));
+}
+
+extern "C" fn cursor_update(this: &Object, _sel: Sel, _event: id) {
+    let state = unsafe { WindowState::from_view(this) };
+    unsafe {
+        super::cursor::set_cursor(state.current_cursor.get(), &state.cursor_hidden);
+    }
+}
+
+extern "C" fn reset_cursor_rects(this: &Object, _sel: Sel) {
+    let state = unsafe { WindowState::from_view(this) };
+    let cursor = state.current_cursor.get();
+    if matches!(cursor, crate::MouseCursor::Hidden) {
+        return;
+    }
+    unsafe {
+        let ns_cursor = super::cursor::to_ns_cursor(cursor);
+        let bounds: NSRect = msg_send![this, bounds];
+        let _: () = msg_send![this, addCursorRect:bounds cursor:ns_cursor];
+    }
 }
 
 extern "C" fn property_yes(_this: &Object, _sel: Sel) -> BOOL {
@@ -406,6 +446,17 @@ extern "C" fn mouse_moved(this: &Object, _sel: Sel, event: id) {
         position,
         modifiers: make_modifiers(modifiers),
     }));
+
+    unsafe {
+        let current_cursor = state.current_cursor.get();
+        if !matches!(current_cursor, crate::MouseCursor::Hidden) {
+            let expected = super::cursor::to_ns_cursor(current_cursor);
+            let current: id = msg_send![class!(NSCursor), currentCursor];
+            if current != expected {
+                let _: () = msg_send![expected, set];
+            }
+        }
+    }
 }
 
 extern "C" fn scroll_wheel(this: &Object, _: Sel, event: id) {

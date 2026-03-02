@@ -82,6 +82,11 @@ impl WindowInner {
                     CFRunLoop::get_current().remove_timer(&frame_timer, kCFRunLoopDefaultMode);
                 }
 
+                if window_state.cursor_hidden.get() {
+                    let arrow: id = msg_send![class!(NSCursor), arrowCursor];
+                    let _: () = msg_send![arrow, set];
+                }
+
                 // Deregister NSView from NotificationCenter.
                 let notification_center: id =
                     msg_send![class!(NSNotificationCenter), defaultCenter];
@@ -267,6 +272,8 @@ impl<'a> Window<'a> {
             keyboard_state: KeyboardState::new(),
             frame_timer: Cell::new(None),
             window_info: Cell::new(window_info),
+            current_cursor: Cell::new(MouseCursor::Default),
+            cursor_hidden: Cell::new(false),
             deferred_events: RefCell::default(),
         });
 
@@ -334,8 +341,17 @@ impl<'a> Window<'a> {
         }
     }
 
-    pub fn set_mouse_cursor(&mut self, _mouse_cursor: MouseCursor) {
-        todo!()
+    pub fn set_mouse_cursor(&mut self, mouse_cursor: MouseCursor) {
+        unsafe {
+            let state = WindowState::from_view(&*self.inner.ns_view);
+            state.current_cursor.set(mouse_cursor);
+            super::cursor::set_cursor(mouse_cursor, &state.cursor_hidden);
+
+            let window: id = msg_send![self.inner.ns_view, window];
+            if window != nil {
+                let _: () = msg_send![window, invalidateCursorRectsForView: self.inner.ns_view];
+            }
+        }
     }
 
     #[cfg(feature = "opengl")]
@@ -361,6 +377,8 @@ pub(super) struct WindowState {
     frame_timer: Cell<Option<CFRunLoopTimer>>,
     /// The last known window info for this window.
     pub window_info: Cell<WindowInfo>,
+    pub(super) current_cursor: Cell<MouseCursor>,
+    pub(super) cursor_hidden: Cell<bool>,
 
     /// Events that will be triggered at the end of `window_handler`'s borrow.
     deferred_events: RefCell<VecDeque<Event>>,
